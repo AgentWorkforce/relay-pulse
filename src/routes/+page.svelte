@@ -57,6 +57,13 @@
 					<span class="text-sm text-slate-400">{totalMessages} messages</span>
 				</div>
 
+				<a
+					href="/transcript"
+					class="px-3 py-1.5 rounded text-sm font-medium bg-slate-700 text-slate-400 hover:bg-slate-600 hover:text-white transition-colors"
+				>
+					Relaycast Transcript
+				</a>
+
 				<!-- Speed Controls -->
 				<div class="flex items-center gap-3">
 					<span class="text-sm text-slate-400">Speed:</span>

@@ -1,0 +1,335 @@
+name: Publish to npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - prerelease
+          - preminor
+          - premajor
+        default: "patch"
+      preid:
+        description: "Prerelease identifier (used with pre* version types)"
+        required: false
+        type: choice
+        options:
+          - beta
+          - alpha
+          - rc
+          - next
+        default: "beta"
+      tag:
+        description: "NPM dist-tag (use beta/alpha/next for prereleases, latest for stable)"
+        required: false
+        type: choice
+        options:
+          - latest
+          - beta
+          - alpha
+          - rc
+          - next
+        default: "latest"
+      custom_version:
+        description: "Custom version (optional, overrides version type)"
+        required: false
+        type: string
+      dry_run:
+        description: "Dry run (do not actually publish)"
+        required: false
+        type: boolean
+        default: false
+
+# Prevent concurrent publishes
+concurrency:
+  group: publish-package
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+  packages: write
+
+env:
+  NPM_CONFIG_FUND: false
+
+jobs:
+  build:
+    name: Build & Version
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+      is_prerelease: ${{ steps.bump.outputs.is_prerelease }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Version package
+        id: bump
+        run: |
+          CUSTOM_VERSION="${{ github.event.inputs.custom_version }}"
+          VERSION_TYPE="${{ github.event.inputs.version }}"
+          PREID="${{ github.event.inputs.preid || 'beta' }}"
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          echo "Current version: $CURRENT_VERSION"
+
+          if [ -n "$CUSTOM_VERSION" ]; then
+            echo "Setting version to custom value: $CUSTOM_VERSION"
+            npm version "$CUSTOM_VERSION" --no-git-tag-version --allow-same-version
+          elif [[ "$VERSION_TYPE" == pre* ]]; then
+            echo "Bumping version: $VERSION_TYPE with preid=$PREID"
+            npm version "$VERSION_TYPE" --preid="$PREID" --no-git-tag-version
+          else
+            echo "Bumping version: $VERSION_TYPE"
+            npm version "$VERSION_TYPE" --no-git-tag-version
+          fi
+
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "New version: $NEW_VERSION"
+
+          # Detect prerelease (version contains a hyphen, e.g. 1.0.0-beta.0)
+          if [[ "$NEW_VERSION" == *"-"* ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+            echo "Prerelease detected: $NEW_VERSION"
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+            echo "Stable release: $NEW_VERSION"
+          fi
+
+      - name: Clean reinstall after version bump
+        run: |
+          rm -rf node_modules
+          npm install
+
+      - name: Type check
+        run: npm run check
+
+      - name: Build package
+        run: npm run package
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: |
+            package.json
+            package-lock.json
+            dist/
+          retention-days: 1
+
+  publish:
+    name: Publish Package
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Validate tag for prerelease
+        if: startsWith(github.event.inputs.version, 'pre') && (github.event.inputs.tag == 'latest' || github.event.inputs.tag == '')
+        run: |
+          echo "::error::Prerelease versions must not use the 'latest' dist-tag. Please set tag to 'beta', 'alpha', 'rc', or 'next'."
+          exit 1
+
+      - name: Validate tag for custom prerelease version
+        if: contains(needs.build.outputs.new_version, '-') && (github.event.inputs.tag == 'latest' || github.event.inputs.tag == '')
+        run: |
+          echo "::error::Custom version '${{ needs.build.outputs.new_version }}' is a prerelease and must not use the 'latest' dist-tag. Please set tag to 'beta', 'alpha', 'rc', or 'next'."
+          exit 1
+
+      - name: Update npm for OIDC support
+        run: npm install -g npm@latest
+
+      - name: Dry run - @agent-relay/pulse
+        if: github.event.inputs.dry_run == 'true'
+        run: npm publish --dry-run --access public --ignore-scripts
+
+      - name: Publish @agent-relay/pulse
+        if: github.event.inputs.dry_run != 'true'
+        run: npm publish --provenance --access public --ignore-scripts --tag ${{ github.event.inputs.tag || 'latest' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  create-release:
+    name: Create Release
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.dry_run != 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .
+
+      - name: Commit and tag
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          NEW_VERSION="${{ needs.build.outputs.new_version }}"
+          IS_PRERELEASE="${{ needs.build.outputs.is_prerelease }}"
+
+          git add package.json package-lock.json
+          if ! git diff --staged --quiet; then
+            if [ "$IS_PRERELEASE" = "true" ]; then
+              git commit -m "chore(prerelease): v${NEW_VERSION}"
+            else
+              git commit -m "chore(release): v${NEW_VERSION}"
+            fi
+            git push origin HEAD:main
+          fi
+
+          git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}"
+          git push origin "v${NEW_VERSION}"
+
+      - name: Create GitHub Release (stable)
+        if: needs.build.outputs.is_prerelease != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.build.outputs.new_version }}
+          name: v${{ needs.build.outputs.new_version }}
+          body: |
+            ## @agent-relay/pulse v${{ needs.build.outputs.new_version }}
+
+            ### Installation
+
+            **Via npm:**
+            ```bash
+            npm install @agent-relay/pulse@${{ needs.build.outputs.new_version }}
+            ```
+
+            **Via pnpm:**
+            ```bash
+            pnpm add @agent-relay/pulse@${{ needs.build.outputs.new_version }}
+            ```
+
+            **Via yarn:**
+            ```bash
+            yarn add @agent-relay/pulse@${{ needs.build.outputs.new_version }}
+            ```
+
+            ### Usage
+
+            ```svelte
+            <script>
+              import { AnimatedFlow } from '@agent-relay/pulse';
+
+              const messages = [
+                { id: '1', ts: Date.now(), from: 'Agent1', to: 'Agent2', kind: 'message', body: 'Hello!' }
+              ];
+            </script>
+
+            <AnimatedFlow {messages} />
+            ```
+
+            See the [README](https://github.com/AgentWorkforce/relay-pulse#readme) for full documentation.
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release (prerelease)
+        if: needs.build.outputs.is_prerelease == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.build.outputs.new_version }}
+          name: v${{ needs.build.outputs.new_version }} (prerelease)
+          prerelease: true
+          body: |
+            ## @agent-relay/pulse v${{ needs.build.outputs.new_version }} (prerelease)
+
+            > **This is a prerelease.** `npm install @agent-relay/pulse` still returns the latest stable version.
+
+            ### Installation
+
+            ```bash
+            npm install @agent-relay/pulse@${{ needs.build.outputs.new_version }}
+            # or via dist-tag:
+            npm install @agent-relay/pulse@${{ github.event.inputs.tag || 'beta' }}
+            ```
+
+            ### Next Steps
+
+            1. Test the prerelease in your project
+            2. Report any issues on [GitHub](https://github.com/AgentWorkforce/relay-pulse/issues)
+            3. If stable, publish a stable release with `tag: latest`
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  summary:
+    name: Summary
+    needs: [build, publish, create-release]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Summary
+        run: |
+          echo "## NPM Publish Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Package**: \`@agent-relay/pulse\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Version**: \`${{ needs.build.outputs.new_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Dist-tag**: \`${{ github.event.inputs.tag || 'latest' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Prerelease**: \`${{ needs.build.outputs.is_prerelease }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Dry Run**: \`${{ github.event.inputs.dry_run }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.build.outputs.is_prerelease }}" = "true" ]; then
+            echo "> **Prerelease** — published under \`${{ github.event.inputs.tag || 'beta' }}\` dist-tag. \`npm install\` still returns the latest stable version." >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ needs.build.result == 'success' && '✅' || '❌' }} ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Publish | ${{ needs.publish.result == 'success' && '✅' || (needs.publish.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Create Release | ${{ needs.create-release.result == 'success' && '✅' || (needs.create-release.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.create-release.result }} |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.build.result }}" = "success" ] && [ "${{ needs.publish.result }}" = "success" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Installation" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+            echo "npm install @agent-relay/pulse@${{ needs.build.outputs.new_version }}" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi

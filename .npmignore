@@ -1,0 +1,41 @@
+# Source files (package ships dist/ only)
+src/
+scripts/
+.svelte-kit/
+
+# Development
+node_modules/
+.vscode/
+.idea/
+*.log
+*.tmp
+
+# Tests
+*.test.ts
+*.test.js
+*.spec.ts
+*.spec.js
+__tests__/
+test/
+tests/
+
+# Build artifacts not needed in package
+.github/
+.git/
+.gitignore
+
+# Documentation (keep README.md, LICENSE)
+*.md
+!README.md
+
+# Config files
+tsconfig.json
+vite.config.js
+svelte.config.js
+tailwind.config.js
+.prettierrc
+.eslintrc*
+
+# Demo/examples (if they exist)
+demo/
+examples/

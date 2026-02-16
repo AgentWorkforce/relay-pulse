@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/pulse",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Visualize agent-to-agent communication in real-time with animated particle flows",
   "keywords": [
     "agent",

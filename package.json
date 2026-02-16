@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/pulse",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Visualize agent-to-agent communication in real-time with animated particle flows",
   "keywords": [
     "agent",
@@ -30,6 +30,9 @@
       "types": "./dist/index.d.ts",
       "svelte": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./element": {
+      "default": "./dist/element.js"
     }
   },
   "files": [
@@ -43,7 +46,8 @@
   "scripts": {
     "dev": "node scripts/dev.js",
     "dev:vite": "vite dev",
-    "build": "vite build && npm run package",
+    "build": "vite build && npm run package && npm run build:element",
+    "build:element": "vite build --config vite.config.element.js",
     "package": "svelte-kit sync && svelte-package && publint",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",

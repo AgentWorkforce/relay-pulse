@@ -1,7 +1,9 @@
+<svelte:options customElement={{ tag: 'animated-flow', shadow: 'none' }} />
+
 <script lang="ts">
 	import { onMount, onDestroy, createEventDispatcher } from 'svelte';
-	import { fade } from 'svelte/transition';
-	import { browser } from '$app/environment';
+
+	const browser = typeof window !== 'undefined';
 
 	const dispatch = createEventDispatcher<{
 		message: RecentMessage;
@@ -375,7 +377,7 @@
 	});
 </script>
 
-<div class="relative w-full h-full min-h-[400px] bg-slate-900 rounded-lg overflow-hidden" in:fade={{ duration: 300 }}>
+<div class="relative w-full h-full min-h-[400px] bg-slate-900 rounded-lg overflow-hidden">
 	<canvas
 		bind:this={canvas}
 		class="w-full h-full"
